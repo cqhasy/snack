@@ -4,18 +4,23 @@
 #include "game.h"
 #include "leaderboard.h"
 #include "snake.h"
+#include <locale.h>
 
-#define CELL_SIZE 20
+#define CELL_SIZE 40
 #define MAX_LEVEL 3
 
 Game game;
 LeaderboardEntry entries[MAX_ENTRIES];
 int entry_count = 0;
 char player_name[32] = "Player";
+int selected_level = 1;
 
 GtkWidget *drawing_area;
 guint timer_id = 0;
+GtkWidget *main_menu_window = NULL;
+GtkWidget *game_window = NULL;
 
+// --- 游戏主界面相关 ---
 void draw_game(GtkWidget *widget, cairo_t *cr, gpointer data) {
     // 背景
     cairo_set_source_rgb(cr, 0.9, 0.9, 0.9);
@@ -94,7 +99,7 @@ gboolean on_draw(GtkWidget *widget, cairo_t *cr, gpointer data) {
     cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
     cairo_set_font_size(cr, 18);
     char score_str[64];
-    sprintf(score_str, "分数: %d  关卡: %d", game.score, game.current_level);
+    sprintf(score_str, "score: %d  level: %d", game.score, game.current_level);
     cairo_move_to(cr, 10, 20);
     cairo_show_text(cr, score_str);
 
@@ -102,17 +107,17 @@ gboolean on_draw(GtkWidget *widget, cairo_t *cr, gpointer data) {
         cairo_set_source_rgb(cr, 1, 0, 0);
         cairo_set_font_size(cr, 32);
         cairo_move_to(cr, 50, 100);
-        cairo_show_text(cr, "游戏结束");
+        cairo_show_text(cr, "game over");
     } else if (game.state == NEXT_LEVEL) {
         cairo_set_source_rgb(cr, 0, 0, 1);
         cairo_set_font_size(cr, 32);
         cairo_move_to(cr, 50, 100);
-        cairo_show_text(cr, "进入下一关!");
+        cairo_show_text(cr, "goto next level");
     } else if (game.state == PAUSED) {
         cairo_set_source_rgb(cr, 0, 0, 1);
         cairo_set_font_size(cr, 32);
         cairo_move_to(cr, 50, 100);
-        cairo_show_text(cr, "暂停");
+        cairo_show_text(cr, "wait");
     }
     return FALSE;
 }
@@ -144,7 +149,7 @@ void show_leaderboard_dialog(GtkWindow *parent) {
 }
 
 void ask_player_name(GtkWindow *parent) {
-    GtkWidget *dialog = gtk_dialog_new_with_buttons("输入名字", parent, GTK_DIALOG_MODAL, "确定", GTK_RESPONSE_OK, NULL);
+    GtkWidget *dialog = gtk_dialog_new_with_buttons("intput name", parent, GTK_DIALOG_MODAL, "确定", GTK_RESPONSE_OK, NULL);
     GtkWidget *content = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
     GtkWidget *entry = gtk_entry_new();
     gtk_entry_set_text(GTK_ENTRY(entry), player_name);
@@ -156,9 +161,20 @@ void ask_player_name(GtkWindow *parent) {
     gtk_widget_destroy(dialog);
 }
 
+void close_game_window() {
+    if (game_window) {
+        gtk_widget_destroy(game_window);
+        game_window = NULL;
+    }
+    if (timer_id) {
+        g_source_remove(timer_id);
+        timer_id = 0;
+    }
+}
+
 void restart_game(GtkWidget *widget, gpointer data) {
     game_free(&game);
-    game_init(&game, 1);
+    game_init(&game, selected_level);
     if (timer_id) g_source_remove(timer_id);
     timer_id = g_timeout_add(game.level.speed, game_timeout, NULL);
     gtk_widget_queue_draw(drawing_area);
@@ -168,6 +184,7 @@ void next_level(GtkWidget *widget, gpointer data) {
     if (game.current_level < MAX_LEVEL) {
         game_free(&game);
         game_init(&game, game.current_level + 1);
+        selected_level = game.current_level;
         if (timer_id) g_source_remove(timer_id);
         timer_id = g_timeout_add(game.level.speed, game_timeout, NULL);
         gtk_widget_queue_draw(drawing_area);
@@ -178,7 +195,20 @@ void on_game_over(GtkWidget *widget, gpointer data) {
     leaderboard_load(entries, &entry_count);
     leaderboard_update(entries, &entry_count, player_name, game.score);
     leaderboard_save(entries, entry_count);
-    show_leaderboard_dialog(GTK_WINDOW(widget));
+    // 弹窗选择操作
+    GtkWidget *dialog = gtk_message_dialog_new(GTK_WINDOW(game_window), GTK_DIALOG_MODAL, GTK_MESSAGE_INFO, GTK_BUTTONS_NONE, "Game Over!\nscore: %d", game.score);
+    gtk_dialog_add_button(GTK_DIALOG(dialog), "Restart", 1);
+    gtk_dialog_add_button(GTK_DIALOG(dialog), "Main Menu", 2);
+    int response = gtk_dialog_run(GTK_DIALOG(dialog));
+    gtk_widget_destroy(dialog);
+    close_game_window();
+    if (response == 1) {
+        // 重新开始本关
+        on_start_game(NULL, NULL);
+    } else {
+        // 返回主菜单
+        if (main_menu_window) gtk_widget_show_all(main_menu_window);
+    }
 }
 
 gboolean on_timer(gpointer data) {
@@ -193,30 +223,70 @@ gboolean on_timer(gpointer data) {
     return TRUE;
 }
 
-int main(int argc, char *argv[]) {
-    gtk_init(&argc, &argv);
-
-    GtkWidget *window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_title(GTK_WINDOW(window), "贪吃蛇");
-    gtk_window_set_resizable(GTK_WINDOW(window), FALSE);
-
-    ask_player_name(GTK_WINDOW(window));
-
-    game_init(&game, 1);
-
+// --- 主菜单相关 ---
+void on_start_game(GtkWidget *widget, gpointer data) {
+    if (main_menu_window) gtk_widget_hide(main_menu_window);
+    if (game_window) gtk_widget_destroy(game_window);
+    game_window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    gtk_window_set_title(GTK_WINDOW(game_window), "贪吃蛇");
+    gtk_window_set_resizable(GTK_WINDOW(game_window), FALSE);
+    game_init(&game, selected_level);
     drawing_area = gtk_drawing_area_new();
     gtk_widget_set_size_request(drawing_area, game.level.width*CELL_SIZE, game.level.height*CELL_SIZE+30);
-    gtk_container_add(GTK_CONTAINER(window), drawing_area);
-
-    g_signal_connect(window, "destroy", G_CALLBACK(gtk_main_quit), NULL);
+    gtk_container_add(GTK_CONTAINER(game_window), drawing_area);
+    g_signal_connect(game_window, "destroy", G_CALLBACK(close_game_window), NULL);
     g_signal_connect(drawing_area, "draw", G_CALLBACK(on_draw), NULL);
-    g_signal_connect(window, "key-press-event", G_CALLBACK(on_key_press), NULL);
-
+    g_signal_connect(game_window, "key-press-event", G_CALLBACK(on_key_press), NULL);
     timer_id = g_timeout_add(game.level.speed, game_timeout, NULL);
+    gtk_widget_show_all(game_window);
+}
 
-    gtk_widget_show_all(window);
+void on_select_level(GtkComboBoxText *combo, gpointer data) {
+    selected_level = gtk_combo_box_get_active(GTK_COMBO_BOX(combo)) + 1;
+}
+
+void on_show_leaderboard(GtkWidget *widget, gpointer data) {
+    show_leaderboard_dialog(GTK_WINDOW(main_menu_window));
+}
+
+void on_quit(GtkWidget *widget, gpointer data) {
+    gtk_main_quit();
+}
+
+void show_main_menu() {
+    main_menu_window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    gtk_window_set_title(GTK_WINDOW(main_menu_window), "meta");
+    gtk_window_set_resizable(GTK_WINDOW(main_menu_window), FALSE);
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
+    GtkWidget *label = gtk_label_new("choose level:");
+    GtkWidget *level_combo = gtk_combo_box_text_new();
+    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(level_combo), "first level");
+    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(level_combo), "second level");
+    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(level_combo), "third level");
+    gtk_combo_box_set_active(GTK_COMBO_BOX(level_combo), 0);
+    GtkWidget *start_btn = gtk_button_new_with_label("start");
+    GtkWidget *leaderboard_btn = gtk_button_new_with_label("bang");
+    GtkWidget *quit_btn = gtk_button_new_with_label("exit");
+    gtk_box_pack_start(GTK_BOX(vbox), label, FALSE, FALSE, 10);
+    gtk_box_pack_start(GTK_BOX(vbox), level_combo, FALSE, FALSE, 10);
+    gtk_box_pack_start(GTK_BOX(vbox), start_btn, FALSE, FALSE, 10);
+    gtk_box_pack_start(GTK_BOX(vbox), leaderboard_btn, FALSE, FALSE, 10);
+    gtk_box_pack_start(GTK_BOX(vbox), quit_btn, FALSE, FALSE, 10);
+    gtk_container_add(GTK_CONTAINER(main_menu_window), vbox);
+    g_signal_connect(start_btn, "clicked", G_CALLBACK(on_start_game), NULL);
+    g_signal_connect(level_combo, "changed", G_CALLBACK(on_select_level), NULL);
+    g_signal_connect(leaderboard_btn, "clicked", G_CALLBACK(on_show_leaderboard), NULL);
+    g_signal_connect(quit_btn, "clicked", G_CALLBACK(on_quit), NULL);
+    g_signal_connect(main_menu_window, "destroy", G_CALLBACK(gtk_main_quit), NULL);
+    gtk_widget_show_all(main_menu_window);
+    // 自动弹出输入名字
+    ask_player_name(GTK_WINDOW(main_menu_window));
+}
+
+int main(int argc, char *argv[]) {
+    setlocale(LC_ALL, "");
+    gtk_init(&argc, &argv);
+    show_main_menu();
     gtk_main();
-
-    game_free(&game);
     return 0;
 }

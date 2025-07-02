@@ -20,6 +20,10 @@ guint timer_id = 0;
 GtkWidget *main_menu_window = NULL;
 GtkWidget *game_window = NULL;
 
+// 主菜单相关函数声明，消除警告
+void on_start_game(GtkWidget *widget, gpointer data);
+void on_game_over(GtkWidget *widget, gpointer data);
+
 // --- 游戏主界面相关 ---
 void draw_game(GtkWidget *widget, cairo_t *cr, gpointer data) {
     // 背景
@@ -54,34 +58,32 @@ gboolean game_timeout(gpointer data) {
     int dy[4] = {-1, 0, 1, 0};
     int new_x = game.snake.head->x + dx[game.snake.direction];
     int new_y = game.snake.head->y + dy[game.snake.direction];
-
-    // 撞墙
     if (new_x < 0 || new_x >= game.level.width || new_y < 0 || new_y >= game.level.height) {
         game.state = GAME_OVER;
         gtk_widget_queue_draw(drawing_area);
+        on_game_over(drawing_area, NULL);
         return FALSE;
     }
-    // 撞自己
     if (snake_check_collision(&game.snake, new_x, new_y)) {
         game.state = GAME_OVER;
         gtk_widget_queue_draw(drawing_area);
+        on_game_over(drawing_area, NULL);
         return FALSE;
     }
-    // 撞障碍物
     for (int i = 0; i < game.level.obstacle_count; i++) {
         if (game.level.obstacles[i][0] == new_x && game.level.obstacles[i][1] == new_y) {
             game.state = GAME_OVER;
             gtk_widget_queue_draw(drawing_area);
+            on_game_over(drawing_area, NULL);
             return FALSE;
         }
     }
-    // 吃到食物
     int grow = 0;
     if (new_x == game.food.x && new_y == game.food.y) {
         grow = 1;
         game.score += 10;
         food_generate(&game.food, &game.snake, &game.level);
-        if (game.snake.length >= 5 + game.current_level * 5) { // 过关条件
+        if (game.snake.length >= 5 + game.current_level * 5) {
             game.state = NEXT_LEVEL;
             gtk_widget_queue_draw(drawing_area);
             return FALSE;
@@ -202,11 +204,10 @@ void on_game_over(GtkWidget *widget, gpointer data) {
     int response = gtk_dialog_run(GTK_DIALOG(dialog));
     gtk_widget_destroy(dialog);
     close_game_window();
+    // 只要不是Restart都回主菜单
     if (response == 1) {
-        // 重新开始本关
         on_start_game(NULL, NULL);
     } else {
-        // 返回主菜单
         if (main_menu_window) gtk_widget_show_all(main_menu_window);
     }
 }

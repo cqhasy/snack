@@ -6,10 +6,11 @@
 typedef struct {
     char name[32];
     int score;
+    int level;
 } LeaderboardEntry;
 
 void leaderboard_load(LeaderboardEntry *entries, int *count);
 void leaderboard_save(LeaderboardEntry *entries, int count);
-void leaderboard_update(LeaderboardEntry *entries, int *count, const char *name, int score);
+void leaderboard_update(LeaderboardEntry *entries, int *count, const char *name, int score, int level);
 
 #endif

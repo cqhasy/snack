@@ -23,7 +23,7 @@ GtkWidget *game_window = NULL;
 // 主菜单相关函数声明，消除警告
 void on_start_game(GtkWidget *widget, gpointer data);
 void on_game_over(GtkWidget *widget, gpointer data);
-
+void on_next_level(GtkWidget *widget, gpointer data);
 // --- 游戏主界面相关 ---
 void draw_game(GtkWidget *widget, cairo_t *cr, gpointer data) {
     // 背景
@@ -53,27 +53,35 @@ void draw_game(GtkWidget *widget, cairo_t *cr, gpointer data) {
 }
 
 gboolean game_timeout(gpointer data) {
-    if (game.state != RUNNING) return TRUE;
+    if (game.state == GAME_OVER) {
+        on_game_over(drawing_area, NULL);
+        return FALSE;
+    }
+    if (game.state == NEXT_LEVEL) {
+        on_next_level(drawing_area, NULL);
+        return FALSE;
+    }
+    // --- 蛇移动主循环逻辑 ---
     int dx[4] = {0, 1, 0, -1};
     int dy[4] = {-1, 0, 1, 0};
     int new_x = game.snake.head->x + dx[game.snake.direction];
     int new_y = game.snake.head->y + dy[game.snake.direction];
     if (new_x < 0 || new_x >= game.level.width || new_y < 0 || new_y >= game.level.height) {
         game.state = GAME_OVER;
-        gtk_widget_queue_draw(drawing_area);
+        if (drawing_area) gtk_widget_queue_draw(drawing_area);
         on_game_over(drawing_area, NULL);
         return FALSE;
     }
     if (snake_check_collision(&game.snake, new_x, new_y)) {
         game.state = GAME_OVER;
-        gtk_widget_queue_draw(drawing_area);
+        if (drawing_area) gtk_widget_queue_draw(drawing_area);
         on_game_over(drawing_area, NULL);
         return FALSE;
     }
     for (int i = 0; i < game.level.obstacle_count; i++) {
         if (game.level.obstacles[i][0] == new_x && game.level.obstacles[i][1] == new_y) {
             game.state = GAME_OVER;
-            gtk_widget_queue_draw(drawing_area);
+            if (drawing_area) gtk_widget_queue_draw(drawing_area);
             on_game_over(drawing_area, NULL);
             return FALSE;
         }
@@ -85,12 +93,13 @@ gboolean game_timeout(gpointer data) {
         food_generate(&game.food, &game.snake, &game.level);
         if (game.snake.length >= 5 + game.current_level * 5) {
             game.state = NEXT_LEVEL;
-            gtk_widget_queue_draw(drawing_area);
+            if (drawing_area) gtk_widget_queue_draw(drawing_area);
+            on_next_level(drawing_area, NULL);
             return FALSE;
         }
     }
     snake_move(&game.snake, grow);
-    gtk_widget_queue_draw(drawing_area);
+    if (drawing_area) gtk_widget_queue_draw(drawing_area);
     return TRUE;
 }
 
@@ -140,18 +149,23 @@ gboolean on_key_press(GtkWidget *widget, GdkEventKey *event, gpointer data) {
 void show_leaderboard_dialog(GtkWindow *parent) {
     leaderboard_load(entries, &entry_count);
     char buf[512] = "";
+    int current_level = game.current_level;
+    int rank = 1;
     for (int i = 0; i < entry_count; i++) {
-        char line[64];
-        sprintf(line, "%d. %s: %d\n", i+1, entries[i].name, entries[i].score);
-        strcat(buf, line);
+        if (entries[i].level == current_level) {
+            char line[64];
+            sprintf(line, "%d. %s: %d\n", rank++, entries[i].name, entries[i].score);
+            strcat(buf, line);
+        }
     }
-    GtkWidget *dialog = gtk_message_dialog_new(parent, GTK_DIALOG_MODAL, GTK_MESSAGE_INFO, GTK_BUTTONS_OK, "排行榜:\n%s", buf);
+    if (rank == 1) strcat(buf, "nothing\n");
+    GtkWidget *dialog = gtk_message_dialog_new(parent, GTK_DIALOG_MODAL, GTK_MESSAGE_INFO, GTK_BUTTONS_OK, "the %d level leaderboard:\n%s", current_level, buf);
     gtk_dialog_run(GTK_DIALOG(dialog));
     gtk_widget_destroy(dialog);
 }
 
 void ask_player_name(GtkWindow *parent) {
-    GtkWidget *dialog = gtk_dialog_new_with_buttons("intput name", parent, GTK_DIALOG_MODAL, "确定", GTK_RESPONSE_OK, NULL);
+    GtkWidget *dialog = gtk_dialog_new_with_buttons("Input Name", parent, GTK_DIALOG_MODAL, "OK", GTK_RESPONSE_OK, NULL);
     GtkWidget *content = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
     GtkWidget *entry = gtk_entry_new();
     gtk_entry_set_text(GTK_ENTRY(entry), player_name);
@@ -179,23 +193,12 @@ void restart_game(GtkWidget *widget, gpointer data) {
     game_init(&game, selected_level);
     if (timer_id) g_source_remove(timer_id);
     timer_id = g_timeout_add(game.level.speed, game_timeout, NULL);
-    gtk_widget_queue_draw(drawing_area);
-}
-
-void next_level(GtkWidget *widget, gpointer data) {
-    if (game.current_level < MAX_LEVEL) {
-        game_free(&game);
-        game_init(&game, game.current_level + 1);
-        selected_level = game.current_level;
-        if (timer_id) g_source_remove(timer_id);
-        timer_id = g_timeout_add(game.level.speed, game_timeout, NULL);
-        gtk_widget_queue_draw(drawing_area);
-    }
+    if (drawing_area) gtk_widget_queue_draw(drawing_area);
 }
 
 void on_game_over(GtkWidget *widget, gpointer data) {
     leaderboard_load(entries, &entry_count);
-    leaderboard_update(entries, &entry_count, player_name, game.score);
+    leaderboard_update(entries, &entry_count, player_name, game.score, game.current_level);
     leaderboard_save(entries, entry_count);
     // 弹窗选择操作
     GtkWidget *dialog = gtk_message_dialog_new(GTK_WINDOW(game_window), GTK_DIALOG_MODAL, GTK_MESSAGE_INFO, GTK_BUTTONS_NONE, "Game Over!\nscore: %d", game.score);
@@ -212,16 +215,19 @@ void on_game_over(GtkWidget *widget, gpointer data) {
     }
 }
 
-gboolean on_timer(gpointer data) {
-    if (game.state == GAME_OVER) {
-        on_game_over(drawing_area, NULL);
-        return FALSE;
+void on_next_level(GtkWidget *widget, gpointer data) {
+    GtkWidget *dialog = gtk_message_dialog_new(GTK_WINDOW(game_window), GTK_DIALOG_MODAL, GTK_MESSAGE_INFO, GTK_BUTTONS_NONE, "恭喜通关！\nscore: %d", game.score);
+    gtk_dialog_add_button(GTK_DIALOG(dialog), "Next Level", 1);
+    gtk_dialog_add_button(GTK_DIALOG(dialog), "Main Menu", 2);
+    int response = gtk_dialog_run(GTK_DIALOG(dialog));
+    gtk_widget_destroy(dialog);
+    close_game_window();
+    if (response == 1) {
+        selected_level = game.current_level + 1;
+        on_start_game(NULL, NULL);
+    } else {
+        if (main_menu_window) gtk_widget_show_all(main_menu_window);
     }
-    if (game.state == NEXT_LEVEL) {
-        next_level(drawing_area, NULL);
-        return FALSE;
-    }
-    return TRUE;
 }
 
 // --- 主菜单相关 ---
@@ -229,7 +235,7 @@ void on_start_game(GtkWidget *widget, gpointer data) {
     if (main_menu_window) gtk_widget_hide(main_menu_window);
     if (game_window) gtk_widget_destroy(game_window);
     game_window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_title(GTK_WINDOW(game_window), "贪吃蛇");
+    gtk_window_set_title(GTK_WINDOW(game_window), "snake");
     gtk_window_set_resizable(GTK_WINDOW(game_window), FALSE);
     game_init(&game, selected_level);
     drawing_area = gtk_drawing_area_new();
